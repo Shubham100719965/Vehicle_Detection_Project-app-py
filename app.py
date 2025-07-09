@@ -2,38 +2,44 @@ import streamlit as st
 import cv2
 import numpy as np
 import tempfile
+import time
 from ultralytics import YOLO
-from PIL import Image
 
-# Load YOLOv8n model (auto-download from Ultralytics hub)
+# Load YOLOv8n model
 model = YOLO("yolov8n")
 
-# Define vehicle-related classes
 vehicle_classes = {"car", "truck", "bus", "motorbike", "motorcycle", "bicycle"}
+line_y = 180  # y-position of red counting line
+offset = 6    # offset to detect crossing
+pixels_to_meter = 0.05
+speed_threshold = 30  # km/h
 
-# Set Streamlit page config
 st.set_page_config(page_title="YOLOv8 Vehicle Detection", layout="wide")
-st.title("🚗 Vehicle Detection using YOLOv8")
+st.title("🚗 Vehicle Detection with Speed Estimation and Counting")
 
-# Upload a video file
 uploaded_file = st.file_uploader("Upload a traffic video", type=["mp4", "avi", "mov"])
 
 if uploaded_file is not None:
-    # Save uploaded file to a temporary location
     tfile = tempfile.NamedTemporaryFile(delete=False)
     tfile.write(uploaded_file.read())
     cap = cv2.VideoCapture(tfile.name)
 
     stframe = st.empty()
+    vehicle_count = 0
+    track_history = {}
+    next_id = 0
+    frame_time = time.time()
 
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret:
             break
 
-        frame = cv2.resize(frame, (640, 360))  # Resize for performance
-
+        frame = cv2.resize(frame, (640, 360))
+        current_time = time.time()
         results = model(frame)[0]
+
+        cv2.line(frame, (0, line_y), (frame.shape[1], line_y), (0, 0, 255), 2)
 
         for box in results.boxes.data.tolist():
             x1, y1, x2, y2, conf, cls_id = box
@@ -42,11 +48,55 @@ if uploaded_file is not None:
                 continue
 
             x1, y1, x2, y2 = map(int, [x1, y1, x2, y2])
-            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-            cv2.putText(frame, label, (x1, y1 - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            cx = int((x1 + x2) / 2)
+            cy = int((y1 + y2) / 2)
 
-        # Display the result frame in Streamlit
+            matched_id = None
+            for track_id, track in track_history.items():
+                px, py = track["position"]
+                if abs(cx - px) < 35 and abs(cy - py) < 35:
+                    matched_id = track_id
+                    break
+
+            if matched_id is None:
+                matched_id = next_id
+                track_history[matched_id] = {
+                    "position": (cx, cy),
+                    "time": current_time,
+                    "counted": False,
+                    "speed": 0
+                }
+                next_id += 1
+            else:
+                prev = track_history[matched_id]
+                distance_px = np.linalg.norm([cx - prev["position"][0], cy - prev["position"][1]])
+                time_diff = current_time - prev["time"]
+                speed_mps = (distance_px * pixels_to_meter) / time_diff if time_diff > 0 else 0
+                speed_kmph = speed_mps * 3.6
+                track_history[matched_id] = {
+                    "position": (cx, cy),
+                    "time": current_time,
+                    "counted": prev["counted"],
+                    "speed": speed_kmph
+                }
+
+                # Check if the vehicle crosses the red line
+                if not prev["counted"] and prev["position"][1] < line_y <= cy:
+                    vehicle_count += 1
+                    track_history[matched_id]["counted"] = True
+
+                # Draw bounding box and speed
+                color = (0, 255, 0) if speed_kmph < speed_threshold else (0, 0, 255)
+                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                cv2.putText(frame, f"{label}", (x1, y1 - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+                cv2.putText(frame, f"{speed_kmph:.1f} km/h", (x1, y2 + 20),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+
+        # Show vehicle count
+        cv2.putText(frame, f"Count: {vehicle_count}", (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 3)
+
         stframe.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), channels="RGB", use_container_width=True)
 
     cap.release()
