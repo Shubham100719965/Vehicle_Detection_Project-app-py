@@ -6,8 +6,9 @@ from ultralytics import YOLO
 from PIL import Image
 import tempfile
 
-# Load YOLOv8 model
-model = YOLO('yolov8n.pt')
+# Load YOLOv8 model (use smallest/lightest version)
+model = YOLO('yolov8n.pt')  # yolov8n is already the fastest; keep it
+
 vehicle_classes = {"car", "truck", "bus", "motorbike", "motorcycle", "bicycle"}
 
 # Parameters
@@ -28,7 +29,8 @@ def pega_centro(x, y, w, h):
     return x + w // 2, y + h // 2
 
 # Streamlit UI
-st.title("🚗 Vehicle Detection, Speed Estimation & Counting")
+st.set_page_config(layout="wide")
+st.title("🚗 Fast Vehicle Detection with Speed Estimation & Counting")
 video_file = st.file_uploader("📤 Upload a video", type=["mp4", "avi", "mov"])
 
 if video_file is not None:
@@ -44,10 +46,18 @@ if video_file is not None:
 
     stframe = st.empty()
 
+    frame_skip = st.slider("🔁 Frame Skipping (higher = faster)", 1, 10, 2)  # process every Nth frame
+
+    frame_count = 0
+
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret:
             break
+
+        frame_count += 1
+        if frame_count % frame_skip != 0:
+            continue
 
         fg_mask = bg_subtractor.apply(frame)
         _, thresh = cv2.threshold(fg_mask, 200, 255, cv2.THRESH_BINARY)
@@ -56,8 +66,12 @@ if video_file is not None:
 
         current_time = time.time()
 
-        results = model(frame)[0]
-        cv2.line(frame, (25, pos_linha), (1200, pos_linha), (255,127,0), 3)
+        # Resize frame to increase speed (optional)
+        resized_frame = cv2.resize(frame, (640, 360))
+        results = model(resized_frame, verbose=False)[0]  # No verbose, reduces console clutter
+
+        # Draw counting line
+        cv2.line(frame, (25, pos_linha), (1200, pos_linha), (255, 127, 0), 3)
 
         for box in results.boxes.data.tolist():
             x1, y1, x2, y2, conf, cls_id = box
@@ -65,11 +79,17 @@ if video_file is not None:
             if label not in vehicle_classes:
                 continue
 
-            x, y, w, h = int(x1), int(y1), int(x2 - x1), int(y2 - y1)
+            # Scale coords back to original frame
+            x1 = int(x1 * frame.shape[1] / 640)
+            y1 = int(y1 * frame.shape[0] / 360)
+            x2 = int(x2 * frame.shape[1] / 640)
+            y2 = int(y2 * frame.shape[0] / 360)
+
+            x, y, w, h = x1, y1, x2 - x1, y2 - y1
             cx, cy = pega_centro(x, y, w, h)
 
             color = (255, 0, 0)
-            cv2.rectangle(frame, (x, y), (x+w, y+h), color, 2)
+            cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
             cv2.putText(frame, f"{label} {conf:.2f}", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
             if (w >= largura_min and h >= altura_min):
@@ -77,10 +97,9 @@ if video_file is not None:
                 for (dcx, dcy) in detec:
                     if pos_linha - offset < dcy < pos_linha + offset:
                         carros += 1
-                        cv2.line(frame, (25, pos_linha), (1200, pos_linha), (0,127,255), 3)
+                        cv2.line(frame, (25, pos_linha), (1200, pos_linha), (0, 127, 255), 3)
                         detec.remove((dcx, dcy))
 
-            # Speed tracking
             matched_id = None
             for track_id, data in vehicle_tracks.items():
                 px, py = data['last_position']
@@ -110,10 +129,10 @@ if video_file is not None:
                     speed_color = (0, 0, 255) if speed > speed_threshold else (0, 255, 0)
                     cv2.putText(frame, speed_text, (x, y + h + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, speed_color, 2)
 
-        # Vehicle Count Display
+        # Display vehicle count
         cv2.putText(frame, f"VEHICLE COUNT : {carros}", (450, 70), cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 0, 255), 5)
 
-        # Convert to RGB for Streamlit
+        # Convert to RGB and display
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         stframe.image(frame_rgb, channels="RGB", use_container_width=True)
 
