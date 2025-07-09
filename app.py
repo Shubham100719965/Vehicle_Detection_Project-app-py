@@ -10,18 +10,16 @@ model = YOLO("yolov8n")
 
 vehicle_classes = {"car", "truck", "bus", "motorbike", "motorcycle", "bicycle"}
 line_y = 180  # y-position of red counting line
-offset = 6
+offset = 6    # offset to detect crossing
 pixels_to_meter = 0.05
 speed_threshold = 30  # km/h
 
-# Streamlit setup
 st.set_page_config(page_title="YOLOv8 Vehicle Detection", layout="wide")
 st.title("🚗 Vehicle Detection with Speed Estimation and Counting")
 
 uploaded_file = st.file_uploader("Upload a traffic video", type=["mp4", "avi", "mov"])
 
 if uploaded_file is not None:
-    # Save to a temp file
     tfile = tempfile.NamedTemporaryFile(delete=False)
     tfile.write(uploaded_file.read())
     cap = cv2.VideoCapture(tfile.name)
@@ -30,6 +28,7 @@ if uploaded_file is not None:
     vehicle_count = 0
     track_history = {}
     next_id = 0
+    frame_time = time.time()
 
     while cap.isOpened():
         ret, frame = cap.read()
@@ -40,8 +39,7 @@ if uploaded_file is not None:
         current_time = time.time()
         results = model(frame)[0]
 
-        # Draw red counting line
-        cv2.line(frame, (0, line_y), (frame.shape[1], line_y), (0, 0, 255), 3)
+        cv2.line(frame, (0, line_y), (frame.shape[1], line_y), (0, 0, 255), 2)
 
         for box in results.boxes.data.tolist():
             x1, y1, x2, y2, conf, cls_id = box
@@ -53,7 +51,6 @@ if uploaded_file is not None:
             cx = int((x1 + x2) / 2)
             cy = int((y1 + y2) / 2)
 
-            # Match vehicle by proximity
             matched_id = None
             for track_id, track in track_history.items():
                 px, py = track["position"]
@@ -83,25 +80,23 @@ if uploaded_file is not None:
                     "speed": speed_kmph
                 }
 
-                # Count vehicle if it crosses the red line
+                # Check if the vehicle crosses the red line
                 if not prev["counted"] and prev["position"][1] < line_y <= cy:
                     vehicle_count += 1
                     track_history[matched_id]["counted"] = True
 
-                # Draw box and speed
+                # Draw bounding box and speed
                 color = (0, 255, 0) if speed_kmph < speed_threshold else (0, 0, 255)
                 cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                cv2.putText(frame, f"{label.upper()}", (x1, y1 - 12),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+                cv2.putText(frame, f"{label}", (x1, y1 - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
                 cv2.putText(frame, f"{speed_kmph:.1f} km/h", (x1, y2 + 20),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.65, color, 2, cv2.LINE_AA)
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
-        # Draw large vehicle count on frame
-        cv2.rectangle(frame, (10, 10), (250, 60), (0, 0, 0), -1)
-        cv2.putText(frame, f"🚘 VEHICLE COUNT: {vehicle_count}", (20, 45),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 255), 2, cv2.LINE_AA)
+        # Show vehicle count
+        cv2.putText(frame, f"Count: {vehicle_count}", (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 3)
 
-        # Show the result frame
         stframe.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), channels="RGB", use_container_width=True)
 
     cap.release()
